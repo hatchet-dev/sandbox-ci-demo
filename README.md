@@ -1,85 +1,97 @@
 # sandboxes-tui-demo
 
-Build and publish Docker images on Hatchet sandboxes instead of GitHub Actions. A GitHub push webhook triggers a durable `image-pipeline` task that fans out one `build-image` child per service. Each child connects to a persistent sandbox for its service, runs `docker build` and `docker push` inside it, and streams the log over a durable stream. The provider pauses the sandbox when idle and resumes it on the next build, so the Docker layer cache is always warm. A TUI watches it all.
+Build and push Docker images with Hatchet sandboxes instead of GitHub Actions.
 
-The sandbox never holds a registry or GitHub secret. The worker runs a small credential proxy and hands each build a one-time token. The proxy swaps that token for the real credential on the way out.
+A push to GitHub starts a Hatchet task. The task opens a sandbox, runs `docker build` and `docker push` inside it, and streams the log back. The sandbox stays around between builds, so the Docker layer cache is always warm. A terminal UI lets you build any public repo and watch each step.
 
-## Setup
+The sandbox never sees your registry password or GitHub token. The worker runs a small proxy that swaps a one-time token for the real credential.
 
-Hatchet Cloud needs the Sandboxes labs preview on and a sandbox provider connected. In the tenant settings turn on Sandboxes, then connect a provider. The sandbox image is plain `docker:28.3.3-dind` and the worker installs git into it on first use, so no custom image is needed.
+## What you need
 
-Archil is the default. Connect a provider named `archil` with your Archil API key and the config `{"region":"aws-us-east-1","workdir":"/workspace"}`. Each sandbox is a microVM with its own root disk that persists across pause and resume, which is where the Docker layer cache lives. Archil's Free plan limits egress to an allowlist that does not include the proxy tunnel, so the account needs the Developer plan or above. Sizing happens on the cold create through `SANDBOX_VCPU` and `SANDBOX_MEMORY`, and forks keep the size of their source.
-
-Daytona also works. Connect a provider named `daytona`, build a snapshot and point `SANDBOX_TEMPLATE` at it with `SANDBOX_WORKDIR=/home/daytona` and the size variables unset. Daytona caps a sandbox disk at 10 GB, which is enough for the sample app but tight for a warm cache of real builds.
-
-```sh
-brew install daytonaio/cli/daytona
-daytona login --api-key <key>
-daytona snapshot create dind-build --image docker:28.3.3-dind --cpu 4 --memory 8 --disk 10
-```
-
-The worker also needs cloudflared for the proxy tunnel.
+- A Hatchet Cloud tenant with the Sandboxes and Durable Streams labs previews turned on.
+- An Archil account on the Developer plan or higher.
+- A GitHub account and a classic personal access token with the `write:packages` scope.
+- Node 24, pnpm and cloudflared on your machine.
 
 ```sh
 brew install cloudflared
 ```
 
-Create the webhook in Hatchet under Webhooks with name `github`, source GitHub, event key expression `'github:' + headers['x-github-event']` and a secret. Add that URL as a webhook on the GitHub repo with content type `application/json`, push events only and the same secret.
+## Setup
 
-Fill in the environment and install.
+1. In Hatchet, go to Settings, then Sandboxes, and connect a provider named `archil` with your Archil API key and this config.
 
-```sh
-cp .env.example .env
-set -a && . ./.env && set +a
-unset HATCHET_CLIENT_TLS_ROOT_CA_FILE
-pnpm install
-```
+   ```json
+   {"region":"aws-us-east-1","workdir":"/workspace"}
+   ```
+
+2. Copy the env file and fill it in. Each variable is explained below.
+
+   ```sh
+   cp .env.example .env
+   ```
+
+3. Install.
+
+   ```sh
+   pnpm install
+   ```
 
 ## Run
 
-The probe is the gate. It builds the sample app cold, reconnects to the same sandbox and builds again, and exits non-zero unless the second build hits the layer cache.
+Load the env file in every terminal you use.
+
+```sh
+set -a && . ./.env && set +a
+```
+
+Check that Docker works in the sandbox and that the cache survives. This builds the sample app twice and fails if the second build is not cached.
 
 ```sh
 pnpm probe
-pnpm worker
-pnpm tui
-pnpm build -- --ref main
 ```
 
-The worker prints the proxy URL once it has a tunnel. Pushing a commit to the repo triggers a run through the webhook.
-
-The TUI has a build form at the top left. Type any public git repo, a ref, the Dockerfile path, the build context, optional matrix targets and build args, then press Enter to run it. Tab moves between fields and down to the runs list, where Enter loads a past run back into the form. The right side shows one pane per image with the pipeline phases, every BuildKit step as it runs, completes or hits the cache, and the pushed image with its digest at the end.
-
-The same options work from the command line.
+Start the worker. It prints the proxy URL once the tunnel is up.
 
 ```sh
-pnpm build -- --repo https://github.com/owner/repo.git --ref main --dockerfile Dockerfile --context . --targets '' --arg VERSION=1.2.3
+pnpm worker
 ```
 
-## Configuration
+Open the terminal UI in a second terminal.
 
-| Variable | Effect |
+```sh
+pnpm tui
+```
+
+Fill in the form at the top left and press Enter. Any public git repo with a Dockerfile works. Tab moves between fields and down to the list of runs. Each image gets a pane on the right that shows the pipeline phases, every build step, and the pushed image with its digest.
+
+You can also build from the command line.
+
+```sh
+pnpm build -- --ref main
+pnpm build -- --repo https://github.com/owner/repo.git --ref main --dockerfile Dockerfile --context . --targets ''
+```
+
+## Build on push
+
+Create a webhook in Hatchet under Webhooks. Use the name `github`, the source GitHub, the event key expression `'github:' + headers['x-github-event']` and a secret of your choice.
+
+Add the webhook URL to your GitHub repo under Settings, then Webhooks. Set the content type to `application/json`, choose push events only and use the same secret. Every push now builds the images in `REPO_URL`.
+
+## Variables
+
+| Variable | Meaning |
 | --- | --- |
-| `HATCHET_CLIENT_TOKEN` | Tenant to run against. Unset `HATCHET_CLIENT_TLS_ROOT_CA_FILE` for Hatchet Cloud. |
-| `SANDBOX_PROVIDER` | Provider name on the tenant. Required when more than one is connected. |
-| `SANDBOX_TEMPLATE` | OCI image on Archil or snapshot name on Daytona. Defaults to `docker:28.3.3-dind`. |
-| `SANDBOX_WORKDIR` | Must match the provider's workdir. Defaults to `/workspace`. |
-| `SANDBOX_VCPU`, `SANDBOX_MEMORY` | Size of the cold sandbox on Archil. Leave unset on Daytona unless resizing is enabled for the org. |
-| `REPO_URL`, `DEFAULT_BRANCH` | Repository to build and the branch whose builds refresh the cache. |
-| `SERVICES` | Default matrix targets, one child task and one image each. Empty builds a single image. |
-| `TARGET_ARG` | Build arg that receives the target. Defaults to `SERVER_TARGET`. |
-| `DOCKERFILE` | Path inside the repo. Defaults to `sample/Dockerfile`. |
-| `BUILD_CONTEXT` | Build context directory inside the repo. Defaults to `sample`. Use `.` for a repo whose Dockerfile expects the repo root. |
-| `REGISTRY_UPSTREAM` | Registry the proxy forwards to. An `*.dkr.ecr.*.amazonaws.com` host switches to ECR tokens from the AWS SDK credential chain. |
-| `IMAGE_PREFIX` | Registry namespace such as `ghcr.io/<owner>`. Images are named `<prefix>/<repo name>-<target>:<sha>`, or without the target for a single image. Every image carries the `org.opencontainers.image.source` label so GHCR links it to the repo. |
-| `REGISTRY_USER`, `REGISTRY_PASSWORD` | Registry credential for non ECR upstreams. GHCR takes a PAT with `write:packages`. |
-| `GITHUB_TOKEN` | Only needed for private repos. Clones go through the proxy when set. |
-| `PROXY_PUBLIC_URL` | Public URL of the proxy. The worker starts a cloudflared quick tunnel when unset. |
-
-## Using this for a real pipeline
-
-Point `REPO_URL` at the private repo and set `GITHUB_TOKEN`. Set `REGISTRY_UPSTREAM` to the ECR host, `IMAGE_PREFIX` to the ECR host as well and `SERVICES` to the service list. ECR repositories must then be named `<repo name>-<target>`, or `imageName` in `src/workflow.ts` needs a different rule. Run the proxy on a host with a stable URL and set `PROXY_PUBLIC_URL`, because a quick tunnel caps a request body at 100 MB and large layers fail to push through it. Nothing else changes.
-
-## Not included
-
-Slack notifications, dependency bump commits, mirroring to a second registry, multi-arch builds and scheduled cache warming. Builds on every branch share the service's sandbox. Snapshot and fork is not used because forking a Hatchet snapshot on Archil currently fails with `409 sandbox_fork_checkpoint`.
+| `HATCHET_CLIENT_TOKEN` | API token for your tenant. |
+| `SANDBOX_PROVIDER` | Provider name in Hatchet. `archil` by default. |
+| `SANDBOX_TEMPLATE` | Image the sandbox boots. `docker:28.3.3-dind` by default. |
+| `SANDBOX_WORKDIR` | Must match the provider config. `/workspace` by default. |
+| `SANDBOX_VCPU`, `SANDBOX_MEMORY` | Size of a new sandbox. |
+| `REPO_URL`, `DEFAULT_BRANCH` | Repo and branch to build when a push arrives or when you run `pnpm build` with no flags. |
+| `DOCKERFILE`, `BUILD_CONTEXT` | Dockerfile path and build context inside the repo. |
+| `SERVICES`, `TARGET_ARG` | Build one image per value in `SERVICES`, passing each value as the `TARGET_ARG` build arg. Leave `SERVICES` empty for a single image. |
+| `IMAGE_PREFIX` | Registry namespace such as `ghcr.io/<owner>`. Images are named `<prefix>/<repo>-<target>:<sha>`. |
+| `REGISTRY_UPSTREAM` | Registry the proxy pushes to. `https://ghcr.io` by default. An ECR host switches to ECR tokens from your AWS credentials. |
+| `REGISTRY_USER`, `REGISTRY_PASSWORD` | Your GitHub user and classic token. Not used for ECR. |
+| `GITHUB_TOKEN` | Only for private repos. |
+| `PROXY_PUBLIC_URL` | Set this if you host the proxy yourself. Otherwise the worker opens a cloudflared tunnel. |
