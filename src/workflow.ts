@@ -1,42 +1,54 @@
 import type { Sandbox } from '@hatchet-dev/sandbox';
 import { ConcurrencyLimitStrategy } from '@hatchet-dev/typescript-sdk/v1';
-import { APP, CFG, hatchet, ok, repoSlug, sh } from './client.js';
+import { APP, CFG, hatchet, ok, q, repoName, repoSlug, sh } from './client.js';
 import * as proxy from './proxy.js';
 
+export type BuildSpec = { dockerfile: string; context: string; args: Record<string, string>; targets: string[]; targetArg: string };
 export type PipelineInput = {
   ref: string;
   after?: string;
   deleted?: boolean;
   repository: { clone_url: string; full_name: string; default_branch?: string };
+  build?: Partial<BuildSpec>;
 };
-export type BuildInput = { cloneUrl: string; repo: string; rev: string; service: string; isDefault: boolean; topic: string };
-export type BuildOutput = { service: string; image: string; digest: string; sha: string; cacheHit: boolean; seconds: number; skipped: boolean };
+export type BuildInput = { cloneUrl: string; repo: string; rev: string; target: string; name: string; spec: BuildSpec; topic: string };
+export type BuildOutput = { name: string; target: string; image: string; digest: string; sha: string; cacheHit: boolean; seconds: number; skipped: boolean };
 export type PipelineOutput = { branch: string; sha?: string; images: BuildOutput[]; skipped?: boolean };
 
 const W = CFG.workdir;
-const SETUP = `command -v git >/dev/null || apk add -q --no-cache git; docker info >/dev/null 2>&1 || (nohup dockerd --data-root ${W}/.docker >${W}/dockerd.log 2>&1 </dev/null &); for i in $(seq 90); do docker info >/dev/null 2>&1 && exit 0; sleep 1; done; tail -50 ${W}/dockerd.log; exit 1`;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export const setup = (sb: Sandbox) => sb.exec(SETUP, { timeoutMs: 240_000 });
+export const defaultSpec = (): BuildSpec => ({ dockerfile: CFG.dockerfile, context: CFG.context, args: {}, targets: CFG.targets, targetArg: CFG.targetArg });
 export const publish = (topic: string, msg: Record<string, unknown>) => hatchet.streams.publish(topic, JSON.stringify(msg));
-export const manualInput = (ref: string): PipelineInput => ({
+export const manualInput = (ref: string, repoUrl = CFG.repoUrl, build?: Partial<BuildSpec>): PipelineInput => ({
   ref,
-  repository: { clone_url: CFG.repoUrl, full_name: repoSlug(CFG.repoUrl), default_branch: CFG.defaultBranch },
+  repository: { clone_url: repoUrl, full_name: repoSlug(repoUrl), default_branch: ref },
+  ...(build ? { build } : {}),
 });
+export const runOpts = (repo: string, ref: string) => ({ additionalMetadata: { repo, ref } });
 
-export const createOpts = (from?: string): NonNullable<Parameters<typeof hatchet.sandbox.create>[0]> => ({
+async function detach(sb: Sandbox, cmd: string) {
+  const r = await sb.exec(`setsid sh -c ${q(cmd)} >/dev/null 2>&1 </dev/null & sleep 60`, { timeoutMs: 1000 });
+  if (r.exitCode !== 124) throw new Error(`detach exited ${r.exitCode} instead of timing out\n${r.stderr || r.stdout}`);
+}
+
+export async function setup(sb: Sandbox) {
+  ok('git', await sb.exec('command -v git >/dev/null || apk add -q --no-cache git', { timeoutMs: 120_000 }));
+  if ((await sb.exec('docker info >/dev/null 2>&1', { timeoutMs: 30_000 })).exitCode === 0) return;
+  await detach(sb, `dockerd --data-root ${W}/.docker >${W}/dockerd.log 2>&1`);
+  ok('dockerd', await sb.exec(`for i in $(seq 90); do docker info >/dev/null 2>&1 && exit 0; sleep 1; done; tail -50 ${W}/dockerd.log; exit 1`, { timeoutMs: 120_000 }));
+}
+
+export const createOpts = (): NonNullable<Parameters<typeof hatchet.sandbox.create>[0]> => ({
   template: CFG.template,
   ...(CFG.provider ? { provider: CFG.provider } : {}),
-  ...(from
-    ? { from }
-    : CFG.vcpu || CFG.memory
-      ? { resources: { ...(CFG.vcpu ? { vcpu: CFG.vcpu } : {}), ...(CFG.memory ? { memory: CFG.memory } : {}) } }
-      : {}),
+  ...(CFG.vcpu || CFG.memory ? { resources: { ...(CFG.vcpu ? { vcpu: CFG.vcpu } : {}), ...(CFG.memory ? { memory: CFG.memory } : {}) } } : {}),
 });
 
 export async function runScript(sb: Sandbox, script: string, onChunk: (chunk: string) => void | Promise<void>, maxSeconds = 55 * 60): Promise<number> {
   await sb.files.write('build.sh', script);
-  ok('start script', await sb.exec(`rm -f build.log rc; (nohup sh -c 'sh build.sh; echo $? > rc' >build.log 2>&1 </dev/null &)`, { timeoutMs: 30_000 }));
+  ok('reset', await sb.exec('rm -f build.log rc', { timeoutMs: 30_000 }));
+  await detach(sb, 'sh build.sh >build.log 2>&1; echo $? > rc');
   const started = Date.now();
   let offset = 0;
   while (Date.now() - started < maxSeconds * 1000) {
@@ -54,12 +66,10 @@ export async function runScript(sb: Sandbox, script: string, onChunk: (chunk: st
   throw new Error(`script still running after ${maxSeconds}s`);
 }
 
-const cacheMeta = (repo: string, service: string) => ({ app: APP, role: 'cache', repo: repo.replace(/\//g, '-'), service });
-
-async function caches(repo: string, service: string) {
-  const list = await hatchet.sandbox.list({ metadata: cacheMeta(repo, service) });
-  return list.filter((s) => s.latestSnapshot).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-}
+const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/-+$/, '');
+const cacheMeta = (repo: string, target: string) => ({ app: APP, role: 'cache', repo: repo.replace(/\//g, '-'), ...(target ? { target } : {}) });
+const cacheId = (repo: string, target: string) => slug(`ci-${repo}${target ? `-${target}` : ''}`).slice(0, 63).replace(/-+$/, '');
+export const imageName = (repo: string, target: string) => `${CFG.imagePrefix}/${repoName(repo)}${target ? `-${slug(target)}` : ''}`;
 
 export const buildImage = hatchet.task({
   name: 'build-image',
@@ -67,43 +77,47 @@ export const buildImage = hatchet.task({
   executionTimeout: '60m',
   fn: async (input: BuildInput, ctx): Promise<BuildOutput> => {
     const started = Date.now();
-    const say = (msg: Record<string, unknown>) => publish(input.topic, { service: input.service, ...msg });
+    const say = (msg: Record<string, unknown>) => publish(input.topic, { name: input.name, ...msg });
     const seconds = () => Math.round((Date.now() - started) / 1000);
-    const previous = await caches(input.repo, input.service);
-    const from = previous[0]?.latestSnapshot;
-    const sb = await hatchet.sandbox.create({
-      ...createOpts(from),
-      metadata: { ...cacheMeta(input.repo, input.service), rev: input.rev.replace(/\//g, '-').slice(0, 40) },
-    });
-    await say({ phase: 'sandbox', cacheHit: Boolean(from), sandboxId: sb.sandboxId });
+    const id = cacheId(input.repo, input.target);
+    const [existing] = await hatchet.sandbox.list({ sandboxId: id });
+    const sb = existing
+      ? await hatchet.sandbox.connect(id, { template: CFG.template })
+      : await hatchet.sandbox.create({ ...createOpts(), id, metadata: cacheMeta(input.repo, input.target) });
+    const cacheHit = Boolean(existing);
+    await say({ phase: 'sandbox', cacheHit, sandboxId: sb.sandboxId });
     const host = proxy.publicHost();
     const ott = proxy.mint();
-    let keep = false;
     try {
-      ok('setup', await setup(sb));
+      await setup(sb);
       const gitAuth = process.env.GITHUB_TOKEN
         ? `-c url."${proxy.publicOrigin()}/git/github.com/".insteadOf=https://github.com/ -c http.extraHeader="Authorization: Basic ${Buffer.from(`build:${ott}`).toString('base64')}"`
         : '';
       const sha = ok('checkout', await sb.exec(sh([
-        `[ -d src/.git ] || git ${gitAuth} clone -q ${input.cloneUrl} src`,
+        `[ -d src/.git ] || git ${gitAuth} clone -q ${q(input.cloneUrl)} src`,
         `git -C src ${gitAuth} fetch -q origin`,
-        `git -C src checkout -q --detach ${input.rev}`,
+        `git -C src checkout -q --detach ${q(input.rev)}`,
         'git -C src rev-parse --short=12 HEAD',
       ]), { timeoutMs: 300_000 })).stdout.trim().split('\n').pop()!;
-      const image = `${CFG.imagePrefix}-${input.service}:${sha}`;
+      await say({ phase: 'checkout', sha });
+      const image = `${imageName(input.repo, input.target)}:${sha}`;
       const pushRef = `${host}/${image.replace(/^[^/]+\//, '')}`;
-      ok('login', await sb.exec(`printf %s '${ott}' | docker login ${host} -u build --password-stdin`, { timeoutMs: 60_000 }));
+      ok('login', await sb.exec(`printf %s ${q(ott)} | docker login ${host} -u build --password-stdin`, { timeoutMs: 60_000 }));
       const exists = (await sb.exec(`docker manifest inspect ${pushRef} >/dev/null 2>&1`, { timeoutMs: 60_000 })).exitCode === 0;
       if (exists) {
         ctx.log(`${image} already exists, skipping`);
-        const out = { service: input.service, image, digest: '', sha, cacheHit: Boolean(from), seconds: seconds(), skipped: true };
+        const out = { name: input.name, target: input.target, image, digest: '', sha, cacheHit, seconds: seconds(), skipped: true };
         await say({ phase: 'done', ...out });
         return out;
       }
       ctx.log(`building ${image}`);
+      await say({ phase: 'build' });
+      const args = Object.entries(input.spec.args).map(([k, v]) => `--build-arg ${q(`${k}=${v}`)}`);
+      if (input.target) args.push(`--build-arg ${q(`${input.spec.targetArg}=${input.target}`)}`);
+      args.push(`--label ${q(`org.opencontainers.image.source=${input.cloneUrl.replace(/\.git$/, '')}`)}`);
       const rc = await runScript(sb, [
         'set -e',
-        `docker build --progress=plain -f src/${CFG.dockerfile} --build-arg SERVER_TARGET=${input.service} -t ${pushRef} src`,
+        `docker build --progress=plain -f src/${q(input.spec.dockerfile)} ${args.join(' ')} -t ${pushRef} src/${q(input.spec.context)}`,
         `docker push ${pushRef}`,
         `docker inspect --format '{{index .RepoDigests 0}}' ${pushRef} | sed 's/.*@//' > digest`,
       ].join('\n'), (log) => say({ log }));
@@ -113,19 +127,12 @@ export const buildImage = hatchet.task({
       }
       const digest = ok('digest', await sb.exec('cat digest', { timeoutMs: 30_000 })).stdout.trim();
       await sb.exec(`docker logout ${host}`, { timeoutMs: 30_000 });
-      keep = input.isDefault;
-      const out = { service: input.service, image, digest, sha, cacheHit: Boolean(from), seconds: seconds(), skipped: false };
+      const out = { name: input.name, target: input.target, image, digest, sha, cacheHit, seconds: seconds(), skipped: false };
       ctx.log(`pushed ${image}@${digest} in ${out.seconds}s`);
       await say({ phase: 'done', ...out });
       return out;
     } finally {
       proxy.revoke(ott);
-      if (keep) {
-        await sb.kill();
-        for (const old of previous) await hatchet.sandbox.delete({ sandboxId: old.sandboxId });
-      } else {
-        await sb.delete();
-      }
     }
   },
 });
@@ -139,13 +146,15 @@ export const pipeline = hatchet.durableTask({
     const topic = `pipeline:${ctx.workflowRunId()}`;
     const branch = input.ref.replace(/^refs\/(heads|tags)\//, '');
     if (input.deleted) return { branch, images: [], skipped: true };
-    const isDefault = branch === (input.repository.default_branch ?? CFG.defaultBranch);
+    const spec: BuildSpec = { ...defaultSpec(), ...Object.fromEntries(Object.entries(input.build ?? {}).filter(([, v]) => v !== undefined)) };
+    const targets = spec.targets.length ? spec.targets : [''];
     const rev = input.after ?? `origin/${branch}`;
-    await publish(topic, { phase: 'start', branch, rev, services: CFG.services });
+    await publish(topic, { phase: 'start', branch, rev, names: targets.map((t) => t || 'image') });
     const images = await ctx.bulkRunChildren<BuildInput, BuildOutput>(
-      CFG.services.map((service) => ({
+      targets.map((target) => ({
         workflow: buildImage,
-        input: { cloneUrl: input.repository.clone_url, repo: input.repository.full_name, rev, service, isDefault, topic },
+        input: { cloneUrl: input.repository.clone_url, repo: input.repository.full_name, rev, target, name: target || 'image', spec, topic },
+        options: { additionalMetadata: { repo: input.repository.full_name, target: target || 'image', ref: branch } },
       }))
     );
     await publish(topic, { phase: 'end', images });

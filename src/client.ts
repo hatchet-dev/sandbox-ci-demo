@@ -5,6 +5,8 @@ process.env.HATCHET_SANDBOX_OTEL ??= 'false';
 
 export const hatchet = HatchetClient.init();
 
+const list = (v: string | undefined, d: string) => (v ?? d).split(',').map((s) => s.trim()).filter(Boolean);
+
 export const CFG = {
   provider: process.env.SANDBOX_PROVIDER ?? '',
   template: process.env.SANDBOX_TEMPLATE ?? 'docker:28.3.3-dind',
@@ -13,8 +15,10 @@ export const CFG = {
   memory: process.env.SANDBOX_MEMORY ?? '',
   repoUrl: process.env.REPO_URL ?? '',
   defaultBranch: process.env.DEFAULT_BRANCH ?? 'main',
-  services: (process.env.SERVICES ?? 'api,worker').split(',').map((s) => s.trim()).filter(Boolean),
+  targets: list(process.env.SERVICES, 'api,worker'),
+  targetArg: process.env.TARGET_ARG ?? 'SERVER_TARGET',
   dockerfile: process.env.DOCKERFILE ?? 'sample/Dockerfile',
+  context: process.env.BUILD_CONTEXT ?? 'sample',
   registryUpstream: process.env.REGISTRY_UPSTREAM ?? 'https://ghcr.io',
   imagePrefix: process.env.IMAGE_PREFIX ?? '',
 };
@@ -22,9 +26,11 @@ export const CFG = {
 export const APP = 'image-ci';
 
 export const repoSlug = (url: string) =>
-  url.replace(/^https?:\/\/[^/]+\//, '').replace(/\.git$/, '').toLowerCase();
+  url.replace(/^https?:\/\/[^/]+\//, '').replace(/^git@[^:]+:/, '').replace(/\.git$/, '').replace(/\/$/, '').toLowerCase();
+export const repoName = (slug: string) => slug.split('/').pop() || 'image';
 
 export const sh = (parts: string[]) => parts.join(' && ');
+export const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 export function detail(e: unknown): string {
   if (e instanceof Error) return e.message || e.name;

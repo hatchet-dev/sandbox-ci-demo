@@ -1,6 +1,6 @@
 # sandboxes-tui-demo
 
-Build and publish Docker images on Hatchet sandboxes instead of GitHub Actions. A GitHub push webhook triggers a durable `image-pipeline` task that fans out one `build-image` child per service. Each child forks a sandbox from the last warm snapshot, runs `docker build` and `docker push` inside it, streams the log over a durable stream, and snapshots the sandbox again so the next build starts with a hot layer cache. A TUI watches it all.
+Build and publish Docker images on Hatchet sandboxes instead of GitHub Actions. A GitHub push webhook triggers a durable `image-pipeline` task that fans out one `build-image` child per service. Each child connects to a persistent sandbox for its service, runs `docker build` and `docker push` inside it, and streams the log over a durable stream. The provider pauses the sandbox when idle and resumes it on the next build, so the Docker layer cache is always warm. A TUI watches it all.
 
 The sandbox never holds a registry or GitHub secret. The worker runs a small credential proxy and hands each build a one-time token. The proxy swaps that token for the real credential on the way out.
 
@@ -8,7 +8,7 @@ The sandbox never holds a registry or GitHub secret. The worker runs a small cre
 
 Hatchet Cloud needs the Sandboxes labs preview on and a sandbox provider connected. In the tenant settings turn on Sandboxes, then connect a provider. The sandbox image is plain `docker:28.3.3-dind` and the worker installs git into it on first use, so no custom image is needed.
 
-Archil is the default. Connect a provider named `archil` with your Archil API key and the config `{"region":"aws-us-east-1","workdir":"/workspace"}`. Each sandbox is a microVM with its own root disk, and a snapshot captures the whole disk including the Docker layer cache. Archil's Free plan limits egress to an allowlist that does not include the proxy tunnel, so the account needs the Developer plan or above. Sizing happens on the cold create through `SANDBOX_VCPU` and `SANDBOX_MEMORY`, and forks keep the size of their source.
+Archil is the default. Connect a provider named `archil` with your Archil API key and the config `{"region":"aws-us-east-1","workdir":"/workspace"}`. Each sandbox is a microVM with its own root disk that persists across pause and resume, which is where the Docker layer cache lives. Archil's Free plan limits egress to an allowlist that does not include the proxy tunnel, so the account needs the Developer plan or above. Sizing happens on the cold create through `SANDBOX_VCPU` and `SANDBOX_MEMORY`, and forks keep the size of their source.
 
 Daytona also works. Connect a provider named `daytona`, build a snapshot and point `SANDBOX_TEMPLATE` at it with `SANDBOX_WORKDIR=/home/daytona` and the size variables unset. Daytona caps a sandbox disk at 10 GB, which is enough for the sample app but tight for a warm cache of real builds.
 
@@ -37,7 +37,7 @@ pnpm install
 
 ## Run
 
-The probe is the gate. It builds the sample app cold, snapshots, forks and builds again, and exits non-zero unless the second build hits the layer cache.
+The probe is the gate. It builds the sample app cold, reconnects to the same sandbox and builds again, and exits non-zero unless the second build hits the layer cache.
 
 ```sh
 pnpm probe
@@ -46,7 +46,15 @@ pnpm tui
 pnpm build -- --ref main
 ```
 
-The worker prints the proxy URL once it has a tunnel. Pushing a commit to the repo triggers a run through the webhook. The TUI lists runs on the left and streams each service's build log on the right. Press `b` to build the default branch by hand.
+The worker prints the proxy URL once it has a tunnel. Pushing a commit to the repo triggers a run through the webhook.
+
+The TUI has a build form at the top left. Type any public git repo, a ref, the Dockerfile path, the build context, optional matrix targets and build args, then press Enter to run it. Tab moves between fields and down to the runs list, where Enter loads a past run back into the form. The right side shows one pane per image with the pipeline phases, every BuildKit step as it runs, completes or hits the cache, and the pushed image with its digest at the end.
+
+The same options work from the command line.
+
+```sh
+pnpm build -- --repo https://github.com/owner/repo.git --ref main --dockerfile Dockerfile --context . --targets '' --arg VERSION=1.2.3
+```
 
 ## Configuration
 
@@ -58,18 +66,20 @@ The worker prints the proxy URL once it has a tunnel. Pushing a commit to the re
 | `SANDBOX_WORKDIR` | Must match the provider's workdir. Defaults to `/workspace`. |
 | `SANDBOX_VCPU`, `SANDBOX_MEMORY` | Size of the cold sandbox on Archil. Leave unset on Daytona unless resizing is enabled for the org. |
 | `REPO_URL`, `DEFAULT_BRANCH` | Repository to build and the branch whose builds refresh the cache. |
-| `SERVICES` | Comma separated `SERVER_TARGET` values, one child task each. |
+| `SERVICES` | Default matrix targets, one child task and one image each. Empty builds a single image. |
+| `TARGET_ARG` | Build arg that receives the target. Defaults to `SERVER_TARGET`. |
 | `DOCKERFILE` | Path inside the repo. Defaults to `sample/Dockerfile`. |
+| `BUILD_CONTEXT` | Build context directory inside the repo. Defaults to `sample`. Use `.` for a repo whose Dockerfile expects the repo root. |
 | `REGISTRY_UPSTREAM` | Registry the proxy forwards to. An `*.dkr.ecr.*.amazonaws.com` host switches to ECR tokens from the AWS SDK credential chain. |
-| `IMAGE_PREFIX` | Image name prefix. The service name and the commit sha are appended. |
+| `IMAGE_PREFIX` | Registry namespace such as `ghcr.io/<owner>`. Images are named `<prefix>/<repo name>-<target>:<sha>`, or without the target for a single image. Every image carries the `org.opencontainers.image.source` label so GHCR links it to the repo. |
 | `REGISTRY_USER`, `REGISTRY_PASSWORD` | Registry credential for non ECR upstreams. GHCR takes a PAT with `write:packages`. |
 | `GITHUB_TOKEN` | Only needed for private repos. Clones go through the proxy when set. |
 | `PROXY_PUBLIC_URL` | Public URL of the proxy. The worker starts a cloudflared quick tunnel when unset. |
 
 ## Using this for a real pipeline
 
-Point `REPO_URL` at the private repo and set `GITHUB_TOKEN`. Set `REGISTRY_UPSTREAM` to the ECR host, `IMAGE_PREFIX` to the ECR repository prefix and `SERVICES` to the service list. Run the proxy on a host with a stable URL and set `PROXY_PUBLIC_URL`, because a quick tunnel caps a request body at 100 MB and large layers fail to push through it. Nothing else changes.
+Point `REPO_URL` at the private repo and set `GITHUB_TOKEN`. Set `REGISTRY_UPSTREAM` to the ECR host, `IMAGE_PREFIX` to the ECR host as well and `SERVICES` to the service list. ECR repositories must then be named `<repo name>-<target>`, or `imageName` in `src/workflow.ts` needs a different rule. Run the proxy on a host with a stable URL and set `PROXY_PUBLIC_URL`, because a quick tunnel caps a request body at 100 MB and large layers fail to push through it. Nothing else changes.
 
 ## Not included
 
-Slack notifications, dependency bump commits, mirroring to a second registry, multi-arch builds and scheduled cache warming. Builds on non default branches delete their sandbox when done and never touch the cache.
+Slack notifications, dependency bump commits, mirroring to a second registry, multi-arch builds and scheduled cache warming. Builds on every branch share the service's sandbox. Snapshot and fork is not used because forking a Hatchet snapshot on Archil currently fails with `409 sandbox_fork_checkpoint`.

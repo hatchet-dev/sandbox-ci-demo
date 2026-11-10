@@ -118,7 +118,6 @@ function quickTunnel(port: number): Promise<string> {
 
 export async function start(port = Number(process.env.PROXY_PORT ?? 8787)): Promise<string> {
   await new Promise<void>((res) => createServer((q, s) => void handle(q, s)).listen(port, '127.0.0.1', res));
-  // ponytail: quick tunnel caps a request body at 100 MB, so a layer above that fails to push. Run the proxy on a host and set PROXY_PUBLIC_URL for real images.
   publicUrl = (process.env.PROXY_PUBLIC_URL || (await quickTunnel(port))).replace(/\/$/, '');
   return publicUrl;
 }
