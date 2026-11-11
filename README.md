@@ -2,18 +2,14 @@
 
 Build Docker images in Hatchet sandboxes instead of GitHub Actions.
 
-Each image gets its own sandbox. The sandbox stays alive between builds, so the Docker cache is always warm. A web page shows every build step live. Secrets stay on your machine. The sandbox only gets a one-time token.
+![sandbox ci web UI](docs/screenshot.png)
 
-## You need
+## Pre-requisites
   
 - Hatchet Cloud with Sandboxes and Durable Streams turned on under `Settings` > `Labs Preview`.
 - An Archil account on the Developer plan.
 - A GitHub classic token with `write:packages`.
 - Node 24, pnpm and `cloudflared`.
-
-```sh
-brew install cloudflared
-```
 
 ## Setup
 
@@ -22,6 +18,8 @@ brew install cloudflared
    ```json
    {"region":"aws-us-east-1","workdir":"/workspace"}
    ```
+
+You will need to change the region accordingly.
 
 2. Fill in the env file.
 
@@ -74,12 +72,6 @@ pnpm build -- --repo https://github.com/owner/repo.git --dockerfile Dockerfile -
 ```
 
 `stage` and `args` are optional. The image is pushed as `<IMAGE_PREFIX>/<repo>-<name>:<sha>`. Set `image` on an entry to pick your own full name.
-
-## Build on push
-
-In Hatchet, add a webhook named `github` with source GitHub, the key expression `'github:' + headers['x-github-event']` and a secret.
-
-In each GitHub repo, add that webhook URL with content type `application/json`, push events only and the same secret. Every push to a repo in `builds.json` now builds its images.
 
 ## Variables
 

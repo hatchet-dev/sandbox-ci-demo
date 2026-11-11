@@ -142,7 +142,13 @@ const commitLink = (url, sha) => {
   return /^https?:\/\//.test(base) ? `<a class="sha" href="${esc(base)}/commit/${esc(sha)}" target="_blank" rel="noopener" title="${esc(sha)}">${short}</a>` : `<span class="sha">${short}</span>`;
 };
 const runLink = (id) => S.runUrl ? `<a class="sha" href="${esc(S.runUrl + id)}" target="_blank" rel="noopener" title="${esc(id)}">hatchet@${esc(id.slice(0, 8))}</a>` : `<span class="sha" title="${esc(id)}">hatchet@${esc(id.slice(0, 8))}</span>`;
-const note = (t, err) => { const n = $('note'); n.textContent = t || ''; n.className = 'note' + (err ? ' err' : ''); };
+const note = (t, err) => {
+  const n = $('note');
+  n.textContent = t || '';
+  n.className = 'note' + (err ? ' err' : '');
+  clearTimeout(note.timer);
+  if (t && !err) note.timer = setTimeout(() => { if (n.textContent === t) n.textContent = ''; }, 5000);
+};
 const api = async (path, opts) => {
   const r = await fetch(path, { headers: { 'content-type': 'application/json' }, ...opts });
   const b = await r.json();
