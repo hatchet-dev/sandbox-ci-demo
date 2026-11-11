@@ -1,17 +1,15 @@
 # sandbox-ci-demo
 
-Build and push Docker images with Hatchet sandboxes instead of GitHub Actions.
+Build Docker images in Hatchet sandboxes instead of GitHub Actions.
 
-A push to GitHub starts a Hatchet task. The task opens a sandbox, runs `docker build` and `docker push` inside it, and streams the log back. The sandbox stays around between builds, so the Docker layer cache is always warm. A terminal UI lets you set up any number of repos and images and watch every layer build.
+Each image gets its own sandbox. The sandbox stays alive between builds, so the Docker cache is always warm. A web page shows every build step live. Secrets stay on your machine. The sandbox only gets a one-time token.
 
-The sandbox never sees your registry password or GitHub token. The worker runs a small proxy that swaps a one-time token for the real credential.
-
-## What you need
-
-- A Hatchet Cloud tenant with the Sandboxes and Durable Streams labs previews turned on.
-- An Archil account on the Developer plan or higher.
-- A GitHub account and a classic personal access token with the `write:packages` scope.
-- Node 24, pnpm and cloudflared on your machine.
+## You need
+  
+- Hatchet Cloud with Sandboxes and Durable Streams turned on under `Settings` > `Labs Preview`.
+- An Archil account on the Developer plan.
+- A GitHub classic token with `write:packages`.
+- Node 24, pnpm and `cloudflared`.
 
 ```sh
 brew install cloudflared
@@ -19,13 +17,13 @@ brew install cloudflared
 
 ## Setup
 
-1. In Hatchet, go to Settings, then Sandboxes, and connect a provider named `archil` with your Archil API key and this config.
+1. In Hatchet go to Sandboxes. Add a provider named `archil` with your Archil API key and this config.
 
    ```json
    {"region":"aws-us-east-1","workdir":"/workspace"}
    ```
 
-2. Copy the env file and fill it in. Each variable is explained below.
+2. Fill in the env file.
 
    ```sh
    cp .env.example .env
@@ -37,9 +35,29 @@ brew install cloudflared
    pnpm install
    ```
 
-## What gets built
+## Run
 
-`builds.json` lists the repos and the images each one produces. The TUI edits this file for you, so you rarely touch it by hand.
+```sh
+set -a && . ./.env && set +a
+pnpm worker
+```
+
+This starts the worker, the credentials proxy and the web UI.
+
+Open http://127.0.0.1:8788.
+
+Pick a repo on the left, or add one. Fill in the URL, the ref and one card per image. Press Build. Each image gets a pane on the right with the phases, the build steps, the cache count and the pushed image.
+
+Your changes are saved to `builds.json`.
+
+Build from a terminal instead.
+
+```sh
+pnpm build -- --repo sandbox-ci-demo --ref main
+pnpm build -- --repo https://github.com/owner/repo.git --dockerfile Dockerfile --context .
+```
+
+## builds.json
 
 ```json
 {
@@ -55,76 +73,37 @@ brew install cloudflared
 }
 ```
 
-Each image has a `name`, a `dockerfile` path and a build `context` inside the repo. `stage` picks a Dockerfile stage and `args` are build args. Both are optional. The pushed image is `<IMAGE_PREFIX>/<repo>-<name>:<sha>`, or `<IMAGE_PREFIX>/<repo>:<sha>` when the name is empty. Set `image` on an entry to use a full image path of your own instead.
-
-## Run
-
-Load the env file in every terminal you use.
-
-```sh
-set -a && . ./.env && set +a
-```
-
-Check that Docker works in the sandbox and that the cache survives. This builds the sample app twice and fails if the second build is not cached.
-
-```sh
-pnpm probe
-```
-
-Start the worker. It prints the proxy URL once the tunnel is up.
-
-```sh
-pnpm worker
-```
-
-Open the terminal UI in a second terminal.
-
-```sh
-pnpm tui
-```
-
-Each repo is a tab. The form shows the repo url, the ref and one block per image. Press Enter in any field to build. The right side shows one pane per image with the pipeline phases, every build step, how many layers came from cache, and the pushed image with its digest.
-
-| Key | Action |
-| --- | --- |
-| Enter | Build the current repo, or load the selected run back into the form. |
-| Tab, arrows | Move between fields and down into the runs list. |
-| ctrl+n | Next repo tab. |
-| ctrl+t, ctrl+w | New repo tab, close the current tab. |
-| ctrl+a, ctrl+x | Add an image after the current one, remove the current image. |
-
-You can also build from the command line. The first form builds a repo from `builds.json` by name. The second builds any public repo with one image.
-
-```sh
-pnpm build -- --repo sandbox-ci-demo --ref main
-pnpm build -- --repo https://github.com/owner/repo.git --dockerfile Dockerfile --context . --stage api --arg KEY=value
-```
+`stage` and `args` are optional. The image is pushed as `<IMAGE_PREFIX>/<repo>-<name>:<sha>`. Set `image` on an entry to pick your own full name.
 
 ## Build on push
 
-Create a webhook in Hatchet under Webhooks. Use the name `github`, the source GitHub, the event key expression `'github:' + headers['x-github-event']` and a secret of your choice.
+In Hatchet, add a webhook named `github` with source GitHub, the key expression `'github:' + headers['x-github-event']` and a secret.
 
-Add the webhook URL to each GitHub repo under Settings, then Webhooks. Set the content type to `application/json`, choose push events only and use the same secret. Every push to a repo listed in `builds.json` now builds its images. Pushes to other repos are ignored.
+In each GitHub repo, add that webhook URL with content type `application/json`, push events only and the same secret. Every push to a repo in `builds.json` now builds its images.
 
 ## Variables
 
 | Variable | Meaning |
 | --- | --- |
-| `HATCHET_CLIENT_TOKEN` | API token for your tenant. |
-| `SANDBOX_PROVIDER` | Provider name in Hatchet. `archil` by default. |
-| `SANDBOX_TEMPLATE` | Image the sandbox boots. `docker:28.3.3-dind` by default. |
-| `SANDBOX_WORKDIR` | Must match the provider config. `/workspace` by default. |
+| `HATCHET_CLIENT_TOKEN` | Your Hatchet API token. |
+| `SANDBOX_PROVIDER` | Provider name in Hatchet. `archil`. |
+| `SANDBOX_TEMPLATE` | Sandbox image. `docker:28.3.3-dind`. |
+| `SANDBOX_WORKDIR` | Same as the provider config. `/workspace`. |
 | `SANDBOX_VCPU`, `SANDBOX_MEMORY` | Size of a new sandbox. |
-| `IMAGE_PREFIX` | Registry namespace such as `ghcr.io/<owner>`. |
-| `REGISTRY_UPSTREAM` | Registry the proxy pushes to. `https://ghcr.io` by default. An ECR host switches to ECR tokens from your AWS credentials. |
-| `REGISTRY_USER`, `REGISTRY_PASSWORD` | Your GitHub user and classic token. Not used for ECR. |
+| `IMAGE_PREFIX` | Where images go, such as `ghcr.io/<owner>`. |
+| `REGISTRY_UPSTREAM` | Registry URL. `https://ghcr.io`. An ECR host uses your AWS credentials instead. |
+| `REGISTRY_USER`, `REGISTRY_PASSWORD` | GitHub user and classic token. |
 | `GITHUB_TOKEN` | Only for private repos. |
-| `PROXY_PUBLIC_URL` | Set this if you host the proxy yourself. Otherwise the worker opens a cloudflared tunnel. |
-| `SKIP_EXISTING` | `true` skips a build when the tag is already in the registry. Off by default so a rebuild shows the warm cache. |
-| `BUILDS_FILE` | Path of the repo list. `builds.json` by default. |
+| `PROXY_PUBLIC_URL` | Set if you host the proxy yourself. Otherwise cloudflared opens a tunnel. |
+| `SKIP_EXISTING` | `true` skips images whose tag already exists. Off by default. |
+| `WEB_PORT` | Web UI port. `8788`. |
+| `HATCHET_DASHBOARD_URL` | Where run links open. Found from your token by default. |
+| `BUILDS_FILE` | Path of the repo list. `builds.json`. |
 
 ## Notes
 
-GHCR packages are private by default. Make them public in the package settings on GitHub if you want others to pull them.
+The web UI has no login and listens on localhost only. Do not expose it without auth.
 
-A cloudflared quick tunnel caps a single request at 100 MB. Run the proxy on a host of your own and set `PROXY_PUBLIC_URL` if a layer is bigger than that.
+GHCR packages are private by default. Make them public in GitHub if you want others to pull.
+
+A cloudflared tunnel caps one request at 100 MB. Host the proxy yourself for bigger layers.

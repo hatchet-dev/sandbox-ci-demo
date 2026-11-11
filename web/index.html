@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sandbox ci</title>
+<style>
+  :root {
+    --bg: #0b0b0c; --fg: #ececec; --muted: #8a8a8e; --faint: #1e1e21; --hover: #141416; --sel: #18181b;
+    --green: #3ddc84; --red: #ff5c5c; --amber: #f5a623; --blue: #4c9aff;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace; --sans: -apple-system, "Inter", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+  body { display: grid; grid-template-rows: 52px 1fr; }
+  button { background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 0; }
+  button:disabled { opacity: .35; cursor: default; }
+  .mono { font-family: var(--mono); }
+
+  header { display: flex; align-items: stretch; gap: 28px; padding: 0 24px; border-bottom: 1px solid var(--faint); }
+  .brand { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 13px; letter-spacing: .02em; }
+  .brand i { width: 8px; height: 8px; background: var(--fg); display: inline-block; }
+  .tabs { display: flex; gap: 4px; align-items: stretch; }
+  .tab { display: flex; align-items: center; padding: 0 12px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; font-size: 13px; }
+  .tab:hover { color: var(--fg); }
+  .tab.on { color: var(--fg); border-bottom-color: var(--fg); }
+  .tab.add { color: var(--muted); font-size: 16px; }
+  .note { margin-left: auto; align-self: center; color: var(--muted); font-size: 12px; font-family: var(--mono); }
+  .note.err { color: var(--red); }
+  .powered { display: flex; align-items: center; gap: 8px; align-self: center; color: var(--muted); font-size: 12px; text-decoration: none; }
+  .powered:hover { color: var(--fg); }
+  .powered svg { display: block; }
+
+  main { display: grid; grid-template-columns: 400px 1fr; min-height: 0; }
+  @media (max-width: 960px) { main { grid-template-columns: 1fr; } .left { border-right: 0; border-bottom: 1px solid var(--faint); } }
+  .left { border-right: 1px solid var(--faint); overflow: auto; display: flex; flex-direction: column; }
+  .right { overflow: auto; min-height: 0; }
+
+  .form { padding: 20px 24px 0; flex: 1; }
+  h2 { margin: 0 0 10px; font-size: 11px; font-weight: 500; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  .f { display: block; margin-bottom: 14px; }
+  .f span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+  .f input { width: 100%; background: none; border: 0; border-bottom: 1px solid var(--faint); color: var(--fg); padding: 4px 0 6px; font: 13px var(--mono); border-radius: 0; }
+  .f input:focus { outline: none; border-bottom-color: var(--fg); }
+  .f input::placeholder { color: #3c3c40; }
+  .img { border-top: 1px solid var(--faint); padding-top: 14px; margin-top: 6px; }
+  .img .head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+  .img .head b { font-family: var(--mono); font-weight: 500; font-size: 13px; }
+  .link { color: var(--muted); font-size: 12px; }
+  .link:hover { color: var(--fg); }
+  .actions { position: sticky; bottom: 0; background: var(--bg); padding: 16px 24px 20px; border-top: 1px solid var(--faint); }
+  .go { width: 100%; background: var(--fg); color: #000; font-weight: 600; font-size: 14px; padding: 11px; border-radius: 4px; }
+  .go:hover { background: #fff; }
+  .sub { display: flex; gap: 16px; align-items: center; margin-top: 12px; font-size: 12px; color: var(--muted); }
+  .sub label { display: flex; gap: 6px; align-items: center; margin-left: auto; cursor: pointer; }
+  .sub input { accent-color: var(--fg); margin: 0; }
+
+  .run { display: grid; grid-template-columns: 24px 1fr 120px 110px 60px 60px 80px; align-items: center; padding: 9px 24px; font: 12px var(--mono); color: var(--muted); cursor: pointer; border-bottom: 1px solid var(--faint); }
+  .run:hover { background: var(--hover); }
+  .run.on { background: var(--sel); color: var(--fg); }
+  .run .r { text-align: right; }
+  .run .ref { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+  .run.on .ref { color: var(--fg); }
+  .sha { font-family: var(--mono); font-size: 12px; color: var(--muted); text-decoration: none; }
+  a.sha:hover { color: var(--fg); text-decoration: underline; }
+  .run .sha { color: var(--muted); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); display: inline-block; }
+  .dot.RUNNING { background: var(--blue); animation: pulse 1.2s infinite; } .dot.COMPLETED { background: var(--green); } .dot.FAILED { background: var(--red); } .dot.CANCELLED { background: var(--amber); } .dot.QUEUED { background: #3c3c40; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  .empty { padding: 20px 24px; color: var(--muted); font-size: 13px; }
+
+  .pane { padding: 20px 24px 24px; border-bottom: 1px solid var(--faint); }
+  .pane .top { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+  .pane .top b { font-family: var(--mono); font-weight: 500; font-size: 15px; }
+  .pane .top .state { font-size: 12px; color: var(--muted); }
+  .pane.running .state { color: var(--blue); } .pane.done .state { color: var(--green); } .pane.failed .state { color: var(--red); } .pane.skipped .state { color: var(--amber); }
+  .pane .meta { margin-left: auto; font: 12px var(--mono); color: var(--muted); }
+  .phases { display: flex; gap: 10px; font: 11px var(--mono); color: #3c3c40; margin-bottom: 12px; }
+  .phases .cur { color: var(--fg); } .phases .ok { color: var(--muted); }
+  .bar { display: flex; height: 2px; background: var(--faint); margin-bottom: 14px; }
+  .bar i { display: block; height: 100%; } .bar .c { background: var(--muted); } .bar .d { background: var(--fg); } .bar .e { background: var(--red); }
+  .steps { font: 12px/1.7 var(--mono); max-height: 340px; overflow: auto; }
+  .step { display: grid; grid-template-columns: 14px 1fr 70px; gap: 10px; color: var(--fg); }
+  .step .g { color: var(--muted); } .step .l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .step .t { color: var(--muted); text-align: right; }
+  .step.internal, .step.cached { color: var(--muted); }
+  .step.done .g { color: var(--fg); } .step.running .g { color: var(--blue); } .step.error { color: var(--red); } .step.error .g { color: var(--red); }
+  .cursor { display: inline-block; width: 7px; height: 11px; background: var(--blue); vertical-align: -1px; animation: pulse .9s infinite; }
+  .tail { margin-top: 10px; font: 12px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .result { display: flex; gap: 10px; align-items: baseline; margin-top: 14px; font: 12px var(--mono); flex-wrap: wrap; }
+  .result .dg { color: var(--muted); }
+  .msg { margin-top: 12px; font-size: 13px; } .msg.warn { color: var(--amber); } .msg.err { color: var(--red); white-space: pre-wrap; font: 12px/1.6 var(--mono); }
+  .viewhead { display: flex; gap: 14px; align-items: baseline; padding: 14px 24px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--faint); }
+  .viewhead b { color: var(--fg); font-family: var(--mono); font-weight: 500; font-size: 13px; }
+  .viewhead .right-side { margin-left: auto; display: flex; gap: 16px; }
+  .viewhead .live { color: var(--blue); } .viewhead .live::before { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--blue); margin-right: 6px; animation: pulse 1.2s infinite; }
+  .idle { padding: 48px 24px; color: var(--muted); font-size: 13px; }
+  .idle b { display: block; color: var(--fg); font-size: 15px; margin-bottom: 6px; font-weight: 500; }
+  .itabs { display: flex; gap: 4px; padding: 10px 24px 0; border-bottom: 1px solid var(--faint); }
+  .itab { display: flex; align-items: center; gap: 8px; padding: 6px 12px 10px; font: 13px var(--mono); color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .itab:hover { color: var(--fg); }
+  .itab.on { color: var(--fg); border-bottom-color: var(--fg); }
+  .dot.running { background: var(--blue); animation: pulse 1.2s infinite; } .dot.done { background: var(--green); } .dot.failed { background: var(--red); } .dot.skipped { background: var(--amber); }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><i></i> sandbox ci</div>
+  <nav class="tabs" id="tabs"></nav>
+  <div class="note" id="note"></div>
+  <a class="powered" href="https://hatchet.run" target="_blank" rel="noopener">powered by <svg viewBox="0 0 198 49" height="18" fill="currentColor" aria-label="Hatchet"><path d="m25.22 21.618 6.486-14.412 12.402 12.402c1.713 1.713 2.569 2.569 2.89 3.556a4.324 4.324 0 0 1 0 2.672c-.321.987-1.177 1.843-2.89 3.556L31.706 41.794H21.618l16.936-18.239c.568-.612.852-.918.866-1.179a.72.72 0 0 0-.258-.59c-.2-.168-.618-.168-1.453-.168H25.221ZM23.78 27.382l-6.486 14.412L4.892 29.392c-1.713-1.713-2.569-2.569-2.89-3.556a4.324 4.324 0 0 1 0-2.672c.321-.987 1.177-1.843 2.89-3.556L17.294 7.207h10.088L10.447 25.445c-.568.612-.852.918-.866 1.179a.72.72 0 0 0 .258.59c.2.168.618.168 1.453.168H23.78ZM186.5 36.963v-20.22h-5.8v-4.64h16.573v4.64h-5.801v20.22H186.5ZM162.725 36.93V12.07h14.253v4.64h-9.281v5.171h7.856v4.641h-7.856v5.768h9.347v4.64h-14.319ZM140.813 36.93V12.07h4.972v10.077h7.193V12.07h4.972v24.86h-4.972V26.787h-7.193V36.93h-4.972ZM127.675 37.262c-5.039 0-8.585-3.182-8.585-8.52v-8.617c0-5.27 3.58-8.387 8.585-8.387 5.005 0 8.585 3.116 8.585 8.387v1.657h-4.972v-1.525c0-2.353-1.459-3.878-3.613-3.878-2.155 0-3.613 1.525-3.613 3.878v8.486c0 2.353 1.458 3.878 3.613 3.878 2.154 0 3.613-1.525 3.613-3.878V26.82h4.972v1.923c0 5.337-3.547 8.519-8.585 8.519ZM105.132 36.963v-20.22h-5.8v-4.64h16.573v4.64h-5.801v20.22h-4.972ZM79.94 36.93l6.165-24.86h6.397l6.166 24.86H92.8l-.663-3.348h-6.033l-.663 3.348H79.94Zm6.96-7.325h4.475l-2.22-11.27-2.254 11.27ZM59.088 36.93V12.07h4.973v10.077h7.192V12.07h4.972v24.86h-4.972V26.787h-7.192V36.93h-4.973Z"/></svg></a>
+</header>
+<main>
+  <div class="left">
+    <div class="form" id="form"></div>
+    <div class="actions" id="actions"></div>
+  </div>
+  <div class="right" id="view"></div>
+</main>
+<script>
+const PHASES = ['sandbox', 'checkout', 'build', 'push', 'done'];
+const IMG_KEYS = ['name', 'dockerfile', 'context', 'stage', 'args'];
+const PLACEHOLDER = { url: 'https://github.com/owner/repo.git', ref: 'main', name: 'empty for a single image', dockerfile: 'Dockerfile', context: '.', stage: 'optional', args: 'KEY=value KEY2=value' };
+const NEW_IMG = () => ({ name: '', dockerfile: 'Dockerfile', context: '.', args: {} });
+const NEW_REPO = () => ({ url: '', ref: 'main', images: [NEW_IMG()] });
+
+const S = { repos: [], tab: 0, runs: [], view: 'live', runId: null, sel: null, selInput: null, panes: {}, img: null, skipExisting: false, runUrl: '', es: null, saveTimer: null };
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const slug = (url) => String(url).replace(/^https?:\/\/[^/]+\//, '').replace(/^git@[^:]+:/, '').replace(/\.git$/, '').replace(/\/$/, '').toLowerCase();
+const repoName = (url) => slug(url).split('/').pop() || 'new repo';
+const paneName = (img) => img.name || 'image';
+const fmtArgs = (a) => Object.entries(a || {}).map(([k, v]) => `${k}=${v}`).join(' ');
+const parseArgs = (s) => Object.fromEntries(s.split(/[\s,]+/).filter((a) => a.includes('=')).map((a) => a.split(/=(.*)/s).slice(0, 2)));
+const secs = (ms) => `${Math.round(ms / 1000)}s`;
+const age = (iso) => { const s = Math.round((Date.now() - new Date(iso)) / 1000); return s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`; };
+const shortRef = (r) => String(r || '').replace(/^refs\/(heads|tags)\//, '');
+const statusOf = (r) => r.status === 'QUEUED' && r.startedAt && !r.finishedAt ? 'RUNNING' : r.status;
+const commitLink = (url, sha) => {
+  if (!sha) return '';
+  const base = String(url || '').replace(/\.git$/, '').replace(/\/$/, '');
+  const short = `git@${esc(String(sha).slice(0, 12))}`;
+  return /^https?:\/\//.test(base) ? `<a class="sha" href="${esc(base)}/commit/${esc(sha)}" target="_blank" rel="noopener" title="${esc(sha)}">${short}</a>` : `<span class="sha">${short}</span>`;
+};
+const runLink = (id) => S.runUrl ? `<a class="sha" href="${esc(S.runUrl + id)}" target="_blank" rel="noopener" title="${esc(id)}">hatchet@${esc(id.slice(0, 8))}</a>` : `<span class="sha" title="${esc(id)}">hatchet@${esc(id.slice(0, 8))}</span>`;
+const note = (t, err) => { const n = $('note'); n.textContent = t || ''; n.className = 'note' + (err ? ' err' : ''); };
+const api = async (path, opts) => {
+  const r = await fetch(path, { headers: { 'content-type': 'application/json' }, ...opts });
+  const b = await r.json();
+  if (!r.ok) throw new Error(b.error || r.statusText);
+  return b;
+};
+const repo = () => S.repos[S.tab];
+const strip = (r) => ({ ...r, images: r.images.map(({ argsText, ...img }) => img) });
+const mine = () => { const s = slug(repo().url); return S.runs.filter((r) => { const rp = r.meta.repo || r.repo; return !rp || slug(rp) === s; }); };
+const go = (hash) => { location.hash = hash; };
+
+function save() {
+  clearTimeout(S.saveTimer);
+  S.saveTimer = setTimeout(() => api('/api/repos', { method: 'PUT', body: JSON.stringify({ repos: S.repos.map(strip) }) }).catch((e) => note(`save: ${e.message}`, true)), 300);
+}
+
+function switchTab(i) {
+  S.tab = i;
+  history.replaceState(null, '', ' ');
+  route();
+  renderTabs(); renderForm();
+}
+
+function renderTabs() {
+  $('tabs').innerHTML = S.repos.map((r, i) => `<button class="tab${i === S.tab ? ' on' : ''}" data-i="${i}">${esc(repoName(r.url))}</button>`).join('')
+    + `<button class="tab add" data-add title="add repo">+</button>`;
+  $('tabs').querySelectorAll('.tab').forEach((el) => el.onclick = () => {
+    if (el.dataset.add !== undefined) { S.repos.push(NEW_REPO()); save(); switchTab(S.repos.length - 1); $('form').querySelector('input').focus(); }
+    else switchTab(Number(el.dataset.i));
+  });
+}
+
+const field = (key, value, img) => `<label class="f"><span>${key}</span><input data-key="${key}"${img === undefined ? '' : ` data-img="${img}"`} value="${esc(value)}" placeholder="${esc(PLACEHOLDER[key])}" spellcheck="false" autocomplete="off"></label>`;
+
+function renderForm() {
+  const r = repo();
+  $('form').innerHTML = `<h2>repo</h2>${field('url', r.url)}${field('ref', r.ref)}
+    ${r.images.map((img, i) => `<div class="img"><div class="head"><b>${esc(paneName(img))}</b><button class="link" data-rm="${i}"${r.images.length === 1 ? ' disabled' : ''}>remove</button></div>
+      ${IMG_KEYS.map((k) => field(k, k === 'args' ? (img.argsText ?? fmtArgs(img.args)) : (img[k] ?? ''), i)).join('')}</div>`).join('')}`;
+  $('actions').innerHTML = `<button class="go" data-build>Build ${esc(repoName(r.url))}</button>
+    <div class="sub"><button class="link" data-addimg>+ image</button><button class="link" data-rmrepo${S.repos.length === 1 ? ' disabled' : ''}>remove repo</button>
+    <label><input type="checkbox" data-skip${S.skipExisting ? ' checked' : ''}> skip if tag exists</label></div>`;
+  $('form').querySelectorAll('input[data-key]').forEach((el) => {
+    el.oninput = () => {
+      const k = el.dataset.key, v = el.value;
+      if (el.dataset.img === undefined) r[k] = v;
+      else {
+        const img = r.images[Number(el.dataset.img)];
+        if (k === 'args') { img.argsText = v; img.args = parseArgs(v); } else img[k] = v;
+        if (k === 'name') el.closest('.img').querySelector('.head b').textContent = paneName(img);
+      }
+      if (k === 'url') { renderTabs(); $('actions').querySelector('.go').textContent = `Build ${repoName(r.url)}`; }
+      save();
+      if (S.view === 'live' && k === 'name') renderView();
+    };
+    el.onkeydown = (e) => { if (e.key === 'Enter') build(); };
+  });
+  $('form').querySelectorAll('[data-rm]').forEach((el) => el.onclick = () => { r.images.splice(Number(el.dataset.rm), 1); save(); renderForm(); renderView(); });
+  $('actions').querySelector('[data-addimg]').onclick = () => { r.images.push(NEW_IMG()); save(); renderForm(); renderView(); const ins = $('form').querySelectorAll('.img input'); ins[ins.length - IMG_KEYS.length].focus(); };
+  $('actions').querySelector('[data-rmrepo]').onclick = () => { S.repos.splice(S.tab, 1); save(); switchTab(Math.max(0, S.tab - 1)); };
+  $('actions').querySelector('[data-build]').onclick = () => build();
+  $('actions').querySelector('[data-skip]').onchange = (e) => { S.skipExisting = e.target.checked; };
+}
+
+async function build(r = repo()) {
+  if (!r.url) return note('repo url is empty', true);
+  const btn = $('actions').querySelector('[data-build]');
+  btn.disabled = true;
+  try {
+    const { id } = await api('/api/build', { method: 'POST', body: JSON.stringify({ repo: strip(r), ref: r.ref, skipExisting: S.skipExisting }) });
+    note(`queued ${repoName(r.url)} @ ${r.ref}`);
+    S.runs.unshift({ id, status: 'QUEUED', createdAt: new Date().toISOString(), meta: { repo: slug(r.url), ref: r.ref }, ref: r.ref, cloneUrl: r.url });
+    if (S.view !== 'live') history.replaceState(null, '', ' ');
+    route();
+    pollRuns();
+  } catch (e) {
+    note(`trigger: ${e.message}`, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function pollRuns() {
+  try {
+    S.runs = (await api('/api/runs')).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    if ($('note').textContent.startsWith('runs:')) note('');
+    if (S.view === 'live') follow(mine()[0]?.id ?? null);
+    renderView();
+  } catch (e) {
+    note(`runs: ${e.message}`, true);
+  }
+}
+
+function follow(id) {
+  if (S.sel === id) return;
+  S.es?.close();
+  S.sel = id; S.selInput = null; S.panes = {}; S.es = null;
+  if (!id) return;
+  api(`/api/runs/${id}`).then((d) => { if (S.sel === id) { S.selInput = d; renderView(); } }, () => undefined);
+  const es = new EventSource(`/api/runs/${id}/events`);
+  S.es = es;
+  es.onmessage = (e) => { const { at, msg } = JSON.parse(e.data); if (msg.note) note(msg.note, true); S.panes = reduce(S.panes, msg, at); renderView(); };
+  es.addEventListener('error', (e) => { if (e.data) note(`stream: ${JSON.parse(e.data)}`, true); });
+}
+
+function route() {
+  const h = location.hash.slice(1);
+  const m = /^run\/([0-9a-f-]{36})$/.exec(h);
+  S.view = m ? 'run' : h === 'history' ? 'history' : 'live';
+  S.runId = m ? m[1] : null;
+  if (S.view === 'run') follow(S.runId);
+  if (S.view === 'live') follow(mine()[0]?.id ?? null);
+  renderView();
+}
+
+const newPane = (at) => ({ steps: new Map(), tail: [], phase: -1, startedAt: at });
+function applyLine(pane, line) {
+  if (line.startsWith('The push refers to')) pane.phase = Math.max(pane.phase, PHASES.indexOf('push'));
+  const m = /^#(\d+) (.*)$/.exec(line);
+  if (!m) return;
+  const id = Number(m[1]), rest = m[2];
+  const step = pane.steps.get(id) ?? { id, label: '', state: 'running' };
+  if (rest.startsWith('[')) step.label = rest;
+  else if (rest.startsWith('DONE')) Object.assign(step, { state: 'done', dur: rest.slice(5) });
+  else if (rest === 'CACHED') step.state = 'cached';
+  else if (rest.startsWith('ERROR')) step.state = 'error';
+  else if (rest.startsWith('CANCELED')) step.state = 'canceled';
+  pane.steps.set(id, step);
+}
+function reduce(panes, msg, at) {
+  if (msg.phase === 'start' && msg.names) return Object.fromEntries(msg.names.map((n) => [n, panes[n] ?? newPane(at)]));
+  if (!msg.name) return panes;
+  const { name, log, phase, ...rest } = msg;
+  const pane = { ...(panes[name] ?? newPane(at)), steps: new Map(panes[name]?.steps ?? []), tail: [...(panes[name]?.tail ?? [])] };
+  if (log) for (const line of log.split('\n')) { if (!line) continue; applyLine(pane, line); pane.tail = [...pane.tail, line].slice(-50); }
+  if (phase) pane.phase = Math.max(pane.phase, PHASES.indexOf(phase));
+  if (phase === 'done') pane.endedAt = at;
+  Object.assign(pane, rest);
+  return { ...panes, [name]: pane };
+}
+
+function renderPane(name, pane, run) {
+  const runEnded = run?.finishedAt ? new Date(run.finishedAt).getTime() : undefined;
+  const done = pane?.phase === PHASES.length - 1;
+  const ended = done || runEnded !== undefined;
+  const failed = ended && !done && run?.status !== 'COMPLETED';
+  const cls = failed ? 'failed' : pane?.skipped ? 'skipped' : done ? 'done' : pane ? 'running' : '';
+  const state = failed ? 'failed' : pane?.skipped ? 'skipped' : done ? 'pushed' : pane ? (PHASES[pane.phase] ?? 'starting') : run ? 'not in this run' : 'waiting';
+  const steps = [...(pane?.steps.values() ?? [])].sort((a, b) => a.id - b.id).filter((s) => s.label);
+  const layers = steps.filter((s) => !s.label.startsWith('[internal]'));
+  const nDone = layers.filter((s) => s.state === 'done').length, nCached = layers.filter((s) => s.state === 'cached').length, nErr = layers.filter((s) => s.state === 'error').length;
+  const elapsed = pane ? secs((pane.endedAt ?? runEnded ?? Date.now()) - pane.startedAt) : '';
+  const meta = pane ? [pane.cacheHit === undefined ? '' : pane.cacheHit ? 'warm sandbox' : 'cold sandbox', layers.length ? `${nCached}/${layers.length} cached` : '', elapsed].filter(Boolean).join('  ·  ') : '';
+  const glyph = (s) => s.state === 'running' ? '<span class="cursor"></span>' : s.state === 'done' ? '●' : s.state === 'cached' ? '○' : s.state === 'error' ? '✕' : '–';
+  const pct = (n) => layers.length ? `${(100 * n) / layers.length}%` : '0%';
+  return `<section class="pane ${cls}">
+    <div class="top"><b>${esc(name)}</b><span class="state">${state}</span>${commitLink(S.selInput?.input?.repository?.clone_url || run?.cloneUrl || repo().url, pane?.sha)}<span class="meta">${esc(meta)}</span></div>
+    <div class="phases">${PHASES.map((p, i) => { const ph = pane?.phase ?? -1; return `<span class="${ph === i && !ended ? 'cur' : ph >= i ? 'ok' : ''}">${p}</span>`; }).join('<span>—</span>')}</div>
+    ${layers.length ? `<div class="bar"><i class="c" style="width:${pct(nCached)}"></i><i class="d" style="width:${pct(nDone)}"></i><i class="e" style="width:${pct(nErr)}"></i></div>` : ''}
+    <div class="steps">${steps.map((s) => `<div class="step ${s.state}${s.label.startsWith('[internal]') ? ' internal' : ''}"><span class="g">${glyph(s)}</span><span class="l" title="${esc(s.label)}">${esc(s.label)}</span><span class="t">${s.dur ? esc(s.dur) : s.state === 'cached' ? 'cached' : ''}</span></div>`).join('')}</div>
+    ${!ended && pane?.tail.length ? `<div class="tail">${esc(pane.tail[pane.tail.length - 1])}</div>` : ''}
+    ${pane?.skipped ? '<div class="msg warn">tag already in registry, nothing to build</div>' : ''}
+    ${pane?.image ? `<div class="result"><span>${esc(pane.image)}</span>${pane.digest ? `<span class="dg">@${esc(pane.digest.slice(0, 19))}…</span><button class="link" data-copy="${esc(`${pane.image}@${pane.digest}`)}">copy</button>` : ''}</div>` : ''}
+    ${failed ? `<div class="msg err">run ${esc((run?.status || 'ended').toLowerCase())} during ${PHASES[pane?.phase ?? 0] ?? 'start'}${S.selInput?.errorMessage ? `\n${esc(S.selInput.errorMessage)}` : ''}</div>` : ''}
+  </section>`;
+}
+
+function runSummary(run) {
+  const ref = run.ref || shortRef(run.meta.ref || S.selInput?.input?.ref);
+  const sha = run.sha || S.selInput?.output?.sha || S.selInput?.input?.after;
+  return `<b>${esc(ref || 'webhook')}</b>${commitLink(run.cloneUrl || S.selInput?.input?.repository?.clone_url || repo().url, sha)}<span>${esc(statusOf(run).toLowerCase())}</span>${run.duration ? `<span>${secs(run.duration)}</span>` : ''}<span>${age(run.createdAt)} ago</span>${runLink(run.id)}`;
+}
+
+function renderRunBody(run, names) {
+  if (!names.includes(S.img)) S.img = names[0];
+  const stateOf = (n) => { const p = S.panes[n]; if (!p) return ''; if (p.phase === PHASES.length - 1) return p.skipped ? 'skipped' : 'done'; if (run?.finishedAt) return run.status === 'COMPLETED' ? 'done' : 'failed'; return 'running'; };
+  const itabs = names.length > 1 ? `<div class="itabs">${names.map((n) => `<button class="itab${n === S.img ? ' on' : ''}" data-img="${esc(n)}"><span class="dot ${stateOf(n)}"></span>${esc(n)}</button>`).join('')}</div>` : '';
+  return itabs + (S.img ? renderPane(S.img, S.panes[S.img], run) : '');
+}
+
+function renderView() {
+  const list = mine();
+  let html = '';
+  if (S.view === 'history') {
+    html = `<div class="viewhead"><button class="link" data-go="">← live</button><b>history</b><span>${list.length} runs</span></div>` + (list.length ? list.map((r) => {
+      const ref = r.ref || shortRef(r.meta.ref);
+      return `<div class="run" data-run="${r.id}"><span class="dot ${statusOf(r)}"></span><span class="ref">${ref ? esc(ref) : r.meta.repo ? '' : 'webhook'}</span>${commitLink(r.cloneUrl || repo().url, r.sha)}${runLink(r.id)}<span class="r">${r.images ? `${r.images} img` : ''}</span><span class="r">${r.duration ? secs(r.duration) : ''}</span><span class="r">${age(r.createdAt)} ago</span></div>`;
+    }).join('') : '<div class="empty">no runs yet</div>');
+  } else if (S.view === 'run') {
+    const run = S.runs.find((r) => r.id === S.runId);
+    const names = Object.keys(S.panes).length ? Object.keys(S.panes) : (S.selInput?.input?.build?.images ?? []).map(paneName);
+    html = `<div class="viewhead"><button class="link" data-go="history">← history</button>${run ? runSummary(run) : `<b>run</b>${runLink(S.runId)}`}<span class="right-side">${S.selInput?.input?.build?.images ? '<button class="link" data-load>load into form</button><button class="link" data-rebuild>rebuild</button>' : ''}</span></div>`
+      + (names.length ? renderRunBody(run, names) : '<div class="idle">loading…</div>');
+  } else {
+    const run = list[0];
+    const formNames = repo().images.map(paneName);
+    const runNames = run ? (Object.keys(S.panes).length ? Object.keys(S.panes) : (S.selInput?.input?.build?.images ?? []).map(paneName)) : [];
+    const names = [...new Set([...runNames, ...formNames])];
+    const live = run && !run.finishedAt;
+    html = `<div class="viewhead">${live ? '<span class="live">live</span>' : '<span>last build</span>'}${run ? runSummary(run) : ''}<span class="right-side"><button class="link" data-go="history">history (${list.length})</button></span></div>`
+      + (run ? renderRunBody(run, names) : `<div class="idle"><b>nothing built yet</b>press Build to start the first run. Pushes to this repo show up here too once the webhook is set.</div>`);
+  }
+  $('view').innerHTML = html;
+  $('view').querySelectorAll('[data-go]').forEach((el) => el.onclick = () => go(el.dataset.go));
+  $('view').querySelectorAll('[data-run]').forEach((el) => el.onclick = () => go(`run/${el.dataset.run}`));
+  $('view').querySelectorAll('.run a').forEach((el) => el.onclick = (e) => e.stopPropagation());
+  $('view').querySelectorAll('.itab').forEach((el) => el.onclick = () => { S.img = el.dataset.img; renderView(); });
+  $('view').querySelectorAll('[data-copy]').forEach((el) => el.onclick = () => navigator.clipboard.writeText(el.dataset.copy).then(() => note('copied')));
+  const current = S.runs.find((r) => r.id === S.sel);
+  if (current && !current.finishedAt) $('view').querySelectorAll('.steps').forEach((el) => { el.scrollTop = el.scrollHeight; });
+  const toForm = () => {
+    const r = repo(), inp = S.selInput.input;
+    r.ref = shortRef(inp.ref) || r.ref;
+    r.images = inp.build.images.map((img) => ({ ...img, args: img.args || {} }));
+    save(); renderForm();
+    return r;
+  };
+  const load = $('view').querySelector('[data-load]');
+  if (load) load.onclick = () => { toForm(); note('loaded into form'); };
+  const rebuild = $('view').querySelector('[data-rebuild]');
+  if (rebuild) rebuild.onclick = () => build(toForm());
+}
+
+setInterval(() => {
+  const run = S.runs.find((r) => r.id === S.sel);
+  if (S.view === 'history' || !run || run.finishedAt) return;
+  renderView();
+}, 1000);
+
+window.addEventListener('hashchange', route);
+
+(async () => {
+  try {
+    const d = await api('/api/repos');
+    S.repos = d.repos.length ? d.repos : [NEW_REPO()];
+    S.skipExisting = d.skipExisting; S.runUrl = d.runUrl || '';
+    renderTabs(); renderForm();
+    await pollRuns();
+    route();
+    setInterval(pollRuns, 2000);
+  } catch (e) {
+    note(`load: ${e.message}`, true);
+  }
+})();
+</script>
+</body>
+</html>
