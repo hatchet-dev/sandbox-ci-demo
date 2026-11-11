@@ -1,24 +1,25 @@
-import { CFG } from './client.js';
-import { manualInput, pipeline, runOpts, type BuildSpec } from './workflow.js';
+import { CFG, findRepo, loadRepos, newRepo, type ImageSpec } from './client.js';
+import { manualInput, pipeline, runOpts } from './workflow.js';
 
 const argv = process.argv.slice(2);
 const flag = (name: string) => {
   const i = argv.indexOf(`--${name}`);
   return i >= 0 ? argv[i + 1] : undefined;
 };
-const repo = flag('repo') ?? CFG.repoUrl;
-const ref = flag('ref') ?? CFG.defaultBranch;
-const build: Partial<BuildSpec> = {
-  ...(flag('dockerfile') ? { dockerfile: flag('dockerfile') } : {}),
-  ...(flag('context') ? { context: flag('context') } : {}),
-  ...(flag('targets') !== undefined ? { targets: flag('targets')!.split(',').map((s) => s.trim()).filter(Boolean) } : {}),
-  ...(flag('target-arg') ? { targetArg: flag('target-arg') } : {}),
-};
-const args = argv.flatMap((a, i) => (a === '--arg' && argv[i + 1]?.includes('=') ? [argv[i + 1].split(/=(.*)/s).slice(0, 2) as [string, string]] : []));
-if (args.length) build.args = Object.fromEntries(args);
+const repos = loadRepos();
+const key = flag('repo');
+let repo = key ? findRepo(repos, key) : repos[0];
+if (!repo && key?.includes('/')) {
+  const args = argv.flatMap((a, i) => (a === '--arg' && argv[i + 1]?.includes('=') ? [argv[i + 1].split(/=(.*)/s).slice(0, 2) as [string, string]] : []));
+  const img: ImageSpec = { name: flag('name') ?? '', dockerfile: flag('dockerfile') ?? 'Dockerfile', context: flag('context') ?? '.', args: Object.fromEntries(args) };
+  if (flag('stage')) img.stage = flag('stage');
+  repo = { ...newRepo(key), images: [img] };
+}
+if (!repo) throw new Error(`no repo ${key ?? ''} in ${CFG.buildsFile}; pass --repo <name> or --repo <url> --dockerfile … --context …`);
 
-const input = manualInput(ref, repo, build);
-console.log(`building ${repo} at ${ref}`);
+const ref = flag('ref') ?? repo.ref;
+const input = manualInput(repo, ref, argv.includes('--skip-existing') || CFG.skipExisting);
+console.log(`building ${repo.url} at ${ref}`);
 const started = Date.now();
 const result = await pipeline.run(input, runOpts(input.repository.full_name, ref));
 for (const i of result.images) {

@@ -1,29 +1,29 @@
 import type { Sandbox } from '@hatchet-dev/sandbox';
 import { ConcurrencyLimitStrategy } from '@hatchet-dev/typescript-sdk/v1';
-import { APP, CFG, hatchet, ok, q, repoName, repoSlug, sh } from './client.js';
+import { APP, CFG, findRepo, hatchet, loadRepos, ok, q, repoName, repoSlug, sh, type ImageSpec, type RepoSpec } from './client.js';
 import * as proxy from './proxy.js';
 
-export type BuildSpec = { dockerfile: string; context: string; args: Record<string, string>; targets: string[]; targetArg: string };
+export type BuildSpec = { images: ImageSpec[]; skipExisting?: boolean };
 export type PipelineInput = {
   ref: string;
   after?: string;
   deleted?: boolean;
   repository: { clone_url: string; full_name: string; default_branch?: string };
-  build?: Partial<BuildSpec>;
+  build?: BuildSpec;
 };
-export type BuildInput = { cloneUrl: string; repo: string; rev: string; target: string; name: string; spec: BuildSpec; topic: string };
-export type BuildOutput = { name: string; target: string; image: string; digest: string; sha: string; cacheHit: boolean; seconds: number; skipped: boolean };
+export type BuildInput = { cloneUrl: string; repo: string; rev: string; spec: ImageSpec; name: string; topic: string; skipExisting: boolean };
+export type BuildOutput = { name: string; image: string; digest: string; sha: string; cacheHit: boolean; seconds: number; skipped: boolean };
 export type PipelineOutput = { branch: string; sha?: string; images: BuildOutput[]; skipped?: boolean };
 
 const W = CFG.workdir;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export const defaultSpec = (): BuildSpec => ({ dockerfile: CFG.dockerfile, context: CFG.context, args: {}, targets: CFG.targets, targetArg: CFG.targetArg });
 export const publish = (topic: string, msg: Record<string, unknown>) => hatchet.streams.publish(topic, JSON.stringify(msg));
-export const manualInput = (ref: string, repoUrl = CFG.repoUrl, build?: Partial<BuildSpec>): PipelineInput => ({
+export const paneName = (img: ImageSpec) => img.name || 'image';
+export const manualInput = (repo: RepoSpec, ref = repo.ref, skipExisting = CFG.skipExisting): PipelineInput => ({
   ref,
-  repository: { clone_url: repoUrl, full_name: repoSlug(repoUrl), default_branch: ref },
-  ...(build ? { build } : {}),
+  repository: { clone_url: repo.url, full_name: repoSlug(repo.url), default_branch: ref },
+  build: { images: repo.images, skipExisting },
 });
 export const runOpts = (repo: string, ref: string) => ({ additionalMetadata: { repo, ref } });
 
@@ -67,9 +67,9 @@ export async function runScript(sb: Sandbox, script: string, onChunk: (chunk: st
 }
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/-+$/, '');
-const cacheMeta = (repo: string, target: string) => ({ app: APP, role: 'cache', repo: repo.replace(/\//g, '-'), ...(target ? { target } : {}) });
-const cacheId = (repo: string, target: string) => slug(`ci-${repo}${target ? `-${target}` : ''}`).slice(0, 63).replace(/-+$/, '');
-export const imageName = (repo: string, target: string) => `${CFG.imagePrefix}/${repoName(repo)}${target ? `-${slug(target)}` : ''}`;
+const cacheMeta = (repo: string, name: string) => ({ app: APP, role: 'cache', repo: repo.replace(/\//g, '-'), ...(name ? { image: name } : {}) });
+const cacheId = (repo: string, name: string) => slug(`ci-${repo}${name ? `-${name}` : ''}`).slice(0, 63).replace(/-+$/, '');
+export const imageName = (repo: string, img: ImageSpec) => img.image || `${CFG.imagePrefix}/${repoName(repo)}${img.name ? `-${slug(img.name)}` : ''}`;
 
 export const buildImage = hatchet.task({
   name: 'build-image',
@@ -79,11 +79,11 @@ export const buildImage = hatchet.task({
     const started = Date.now();
     const say = (msg: Record<string, unknown>) => publish(input.topic, { name: input.name, ...msg });
     const seconds = () => Math.round((Date.now() - started) / 1000);
-    const id = cacheId(input.repo, input.target);
+    const id = cacheId(input.repo, input.spec.name);
     const [existing] = await hatchet.sandbox.list({ sandboxId: id });
     const sb = existing
       ? await hatchet.sandbox.connect(id, { template: CFG.template })
-      : await hatchet.sandbox.create({ ...createOpts(), id, metadata: cacheMeta(input.repo, input.target) });
+      : await hatchet.sandbox.create({ ...createOpts(), id, metadata: cacheMeta(input.repo, input.spec.name) });
     const cacheHit = Boolean(existing);
     await say({ phase: 'sandbox', cacheHit, sandboxId: sb.sandboxId });
     const host = proxy.publicHost();
@@ -94,26 +94,26 @@ export const buildImage = hatchet.task({
         ? `-c url."${proxy.publicOrigin()}/git/github.com/".insteadOf=https://github.com/ -c http.extraHeader="Authorization: Basic ${Buffer.from(`build:${ott}`).toString('base64')}"`
         : '';
       const sha = ok('checkout', await sb.exec(sh([
+        'export GIT_TERMINAL_PROMPT=0',
         `[ -d src/.git ] || git ${gitAuth} clone -q ${q(input.cloneUrl)} src`,
         `git -C src ${gitAuth} fetch -q origin`,
         `git -C src checkout -q --detach ${q(input.rev)}`,
         'git -C src rev-parse --short=12 HEAD',
       ]), { timeoutMs: 300_000 })).stdout.trim().split('\n').pop()!;
       await say({ phase: 'checkout', sha });
-      const image = `${imageName(input.repo, input.target)}:${sha}`;
+      const image = `${imageName(input.repo, input.spec)}:${sha}`;
       const pushRef = `${host}/${image.replace(/^[^/]+\//, '')}`;
       ok('login', await sb.exec(`printf %s ${q(ott)} | docker login ${host} -u build --password-stdin`, { timeoutMs: 60_000 }));
-      const exists = (await sb.exec(`docker manifest inspect ${pushRef} >/dev/null 2>&1`, { timeoutMs: 60_000 })).exitCode === 0;
-      if (exists) {
+      if (input.skipExisting && (await sb.exec(`docker manifest inspect ${pushRef} >/dev/null 2>&1`, { timeoutMs: 60_000 })).exitCode === 0) {
         ctx.log(`${image} already exists, skipping`);
-        const out = { name: input.name, target: input.target, image, digest: '', sha, cacheHit, seconds: seconds(), skipped: true };
+        const out = { name: input.name, image, digest: '', sha, cacheHit, seconds: seconds(), skipped: true };
         await say({ phase: 'done', ...out });
         return out;
       }
       ctx.log(`building ${image}`);
       await say({ phase: 'build' });
-      const args = Object.entries(input.spec.args).map(([k, v]) => `--build-arg ${q(`${k}=${v}`)}`);
-      if (input.target) args.push(`--build-arg ${q(`${input.spec.targetArg}=${input.target}`)}`);
+      const args = Object.entries(input.spec.args ?? {}).map(([k, v]) => `--build-arg ${q(`${k}=${v}`)}`);
+      if (input.spec.stage) args.push(`--target ${q(input.spec.stage)}`);
       args.push(`--label ${q(`org.opencontainers.image.source=${input.cloneUrl.replace(/\.git$/, '')}`)}`);
       const rc = await runScript(sb, [
         'set -e',
@@ -127,7 +127,7 @@ export const buildImage = hatchet.task({
       }
       const digest = ok('digest', await sb.exec('cat digest', { timeoutMs: 30_000 })).stdout.trim();
       await sb.exec(`docker logout ${host}`, { timeoutMs: 30_000 });
-      const out = { name: input.name, target: input.target, image, digest, sha, cacheHit, seconds: seconds(), skipped: false };
+      const out = { name: input.name, image, digest, sha, cacheHit, seconds: seconds(), skipped: false };
       ctx.log(`pushed ${image}@${digest} in ${out.seconds}s`);
       await say({ phase: 'done', ...out });
       return out;
@@ -146,15 +146,23 @@ export const pipeline = hatchet.durableTask({
     const topic = `pipeline:${ctx.workflowRunId()}`;
     const branch = input.ref.replace(/^refs\/(heads|tags)\//, '');
     if (input.deleted) return { branch, images: [], skipped: true };
-    const spec: BuildSpec = { ...defaultSpec(), ...Object.fromEntries(Object.entries(input.build ?? {}).filter(([, v]) => v !== undefined)) };
-    const targets = spec.targets.length ? spec.targets : [''];
+    const repo = input.repository.full_name;
+    const spec = input.build ?? (() => {
+      const r = findRepo(loadRepos(), input.repository.clone_url);
+      return r ? { images: r.images, skipExisting: CFG.skipExisting } : undefined;
+    })();
+    if (!spec?.images.length) {
+      ctx.log(`${repo} is not in ${CFG.buildsFile}, nothing to build`);
+      await publish(topic, { phase: 'start', branch, names: [], note: `${repo} is not in ${CFG.buildsFile}` });
+      return { branch, images: [], skipped: true };
+    }
     const rev = input.after ?? `origin/${branch}`;
-    await publish(topic, { phase: 'start', branch, rev, names: targets.map((t) => t || 'image') });
+    await publish(topic, { phase: 'start', branch, rev, names: spec.images.map(paneName) });
     const images = await ctx.bulkRunChildren<BuildInput, BuildOutput>(
-      targets.map((target) => ({
+      spec.images.map((img) => ({
         workflow: buildImage,
-        input: { cloneUrl: input.repository.clone_url, repo: input.repository.full_name, rev, target, name: target || 'image', spec, topic },
-        options: { additionalMetadata: { repo: input.repository.full_name, target: target || 'image', ref: branch } },
+        input: { cloneUrl: input.repository.clone_url, repo, rev, spec: img, name: paneName(img), topic, skipExisting: Boolean(spec.skipExisting) },
+        options: { additionalMetadata: { repo, image: paneName(img), ref: branch } },
       }))
     );
     await publish(topic, { phase: 'end', images });

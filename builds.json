@@ -1,0 +1,26 @@
+{
+  "repos": [
+    {
+      "url": "https://github.com/mnafees/sandbox-ci-demo.git",
+      "ref": "main",
+      "images": [
+        {
+          "name": "api",
+          "dockerfile": "sample/Dockerfile",
+          "context": "sample",
+          "args": {
+            "SERVER_TARGET": "api"
+          }
+        },
+        {
+          "name": "worker",
+          "dockerfile": "sample/Dockerfile",
+          "context": "sample",
+          "args": {
+            "SERVER_TARGET": "worker"
+          }
+        }
+      ]
+    }
+  ]
+}
