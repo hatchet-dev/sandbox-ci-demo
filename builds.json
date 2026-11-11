@@ -1,7 +1,7 @@
 {
   "repos": [
     {
-      "url": "https://github.com/mnafees/sandbox-ci-demo.git",
+      "url": "https://github.com/hatchet-dev/sandbox-ci-demo.git",
       "ref": "main",
       "images": [
         {
