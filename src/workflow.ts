@@ -1,6 +1,6 @@
 import type { Sandbox } from '@hatchet-dev/sandbox';
 import { ConcurrencyLimitStrategy } from '@hatchet-dev/typescript-sdk/v1';
-import { APP, CFG, findRepo, hatchet, loadRepos, ok, q, repoName, repoSlug, sh, type ImageSpec, type RepoSpec } from './client.js';
+import { APP, CFG, detail, findRepo, hatchet, loadRepos, ok, q, repoName, repoSlug, sh, type ImageSpec, type RepoSpec } from './client.js';
 import * as proxy from './proxy.js';
 
 export type BuildSpec = { images: ImageSpec[]; skipExisting?: boolean };
@@ -71,6 +71,21 @@ const cacheMeta = (repo: string, name: string) => ({ app: APP, role: 'cache', re
 const cacheId = (repo: string, name: string) => slug(`ci-${repo}${name ? `-${name}` : ''}`).slice(0, 63).replace(/-+$/, '');
 export const imageName = (repo: string, img: ImageSpec) => img.image || `${CFG.imagePrefix}/${repoName(repo)}${img.name ? `-${slug(img.name)}` : ''}`;
 
+async function cacheSandbox(repo: string, name: string, log: (m: string) => void): Promise<{ sb: Sandbox; cacheHit: boolean }> {
+  const metadata = cacheMeta(repo, name);
+  const [newest] = (await hatchet.sandbox.list({ metadata })).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  if (newest) {
+    try {
+      return { sb: await hatchet.sandbox.connect(newest.sandboxId, { template: CFG.template }), cacheHit: true };
+    } catch (e) {
+      if (!/provider .* was deleted/.test(detail(e))) throw e;
+      log(`cache sandbox ${newest.sandboxId} belongs to a deleted provider, starting a new one`);
+    }
+  }
+  const id = `${cacheId(repo, name).slice(0, 55)}-${Date.now().toString(36)}`;
+  return { sb: await hatchet.sandbox.create({ ...createOpts(), id, metadata }), cacheHit: false };
+}
+
 export const buildImage = hatchet.task({
   name: 'build-image',
   retries: 1,
@@ -79,12 +94,7 @@ export const buildImage = hatchet.task({
     const started = Date.now();
     const say = (msg: Record<string, unknown>) => publish(input.topic, { name: input.name, ...msg });
     const seconds = () => Math.round((Date.now() - started) / 1000);
-    const id = cacheId(input.repo, input.spec.name);
-    const [existing] = await hatchet.sandbox.list({ sandboxId: id });
-    const sb = existing
-      ? await hatchet.sandbox.connect(id, { template: CFG.template })
-      : await hatchet.sandbox.create({ ...createOpts(), id, metadata: cacheMeta(input.repo, input.spec.name) });
-    const cacheHit = Boolean(existing);
+    const { sb, cacheHit } = await cacheSandbox(input.repo, input.spec.name, (m) => ctx.log(m));
     await say({ phase: 'sandbox', cacheHit, sandboxId: sb.sandboxId });
     const host = proxy.publicHost();
     const ott = proxy.mint();
